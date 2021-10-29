@@ -5,6 +5,7 @@ import android.content.pm.PackageManager
 import android.content.res.Resources
 import android.graphics.Color
 import android.os.Bundle
+import android.os.Environment
 import android.speech.tts.TextToSpeech
 import android.util.Log
 import android.widget.Toast
@@ -12,11 +13,14 @@ import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import com.esri.arcgisruntime.ArcGISRuntimeEnvironment
+import com.esri.arcgisruntime.data.TransportationNetworkDataset
 import com.esri.arcgisruntime.geometry.Point
 import com.esri.arcgisruntime.geometry.SpatialReferences
+import com.esri.arcgisruntime.loadable.LoadStatus
 import com.esri.arcgisruntime.location.LocationDataSource
 import com.esri.arcgisruntime.mapping.ArcGISMap
 import com.esri.arcgisruntime.mapping.BasemapStyle
+import com.esri.arcgisruntime.mapping.MobileMapPackage
 import com.esri.arcgisruntime.mapping.Viewpoint
 import com.esri.arcgisruntime.mapping.view.Graphic
 import com.esri.arcgisruntime.mapping.view.GraphicsOverlay
@@ -30,6 +34,7 @@ import com.esri.arcgisruntime.tasks.networkanalysis.RouteTask
 import com.esri.arcgisruntime.tasks.networkanalysis.Stop
 import kotlinx.android.synthetic.main.activity_main.*
 import kotlinx.android.synthetic.main.layout_navigation_controls.*
+import java.io.File
 import java.util.concurrent.ExecutionException
 
 class MapActivity : AppCompatActivity() {
@@ -41,6 +46,7 @@ class MapActivity : AppCompatActivity() {
     private var isTextToSpeechInitialized = false
 
     private var location: LocationDataSource.Location? = null
+    private var transportationNetworkDataset: TransportationNetworkDataset? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -48,10 +54,31 @@ class MapActivity : AppCompatActivity() {
 
         requestPermissions()
         initLocation()
-        setupMap()
+    }
 
-        setupTextToSpeech()
-        setupRoute()
+    private fun getMapPath(): String? {
+        val dir = File(getMapDir())
+        val filteredFiles = dir.listFiles { file ->
+            file.absolutePath.contains(".mmpk", ignoreCase = true)
+        }
+
+        return if (filteredFiles != null && filteredFiles.isNotEmpty()) filteredFiles[0].absolutePath else null
+    }
+
+    private fun getMapDir(): String {
+        var path = ""
+
+        val absolutPath = Environment.getExternalStorageDirectory().absolutePath
+        val fileList = File("/storage/").listFiles()
+        for (file in fileList) {
+            if (file.absolutePath.equals(absolutPath, ignoreCase = true).not()
+                && file.isDirectory && file.canRead()
+            ) {
+                path = file.absolutePath
+            }
+        }
+
+        return path
     }
 
     private fun setupMap() {
@@ -71,7 +98,7 @@ class MapActivity : AppCompatActivity() {
     }
 
     private fun setupRoute() {
-        val routeTask = RouteTask(this, getString(R.string.routing_service_url))
+        val routeTask = RouteTask(this, transportationNetworkDataset)
         val routeParametersFuture = routeTask.createDefaultParametersAsync()
 
         routeParametersFuture.addDoneListener {
@@ -84,16 +111,16 @@ class MapActivity : AppCompatActivity() {
 
     private fun setupStops(routeParameters: RouteParameters) {
         routeParameters.setStops(
-            /*listOf(
-                Stop(Point(33.979253, -81.257815, SpatialReferences.getWgs84())),
-                Stop(Point(33.978554, -81.252928, SpatialReferences.getWgs84())),
-                Stop(Point(33.978477, -81.244195, SpatialReferences.getWgs84()))
-            )*/
             listOf(
+                Stop(Point(-81.257815, 33.979253, SpatialReferences.getWgs84())),
+                Stop(Point(-81.252928, 33.978554, SpatialReferences.getWgs84())),
+                Stop(Point(-81.244195, 33.978477, SpatialReferences.getWgs84()))
+            )
+            /*listOf(
                 Stop(Point(-117.160386, 32.706608, SpatialReferences.getWgs84())),
                 Stop(Point(-117.173034, 32.712327, SpatialReferences.getWgs84())),
                 Stop(Point(-117.147230, 32.730467, SpatialReferences.getWgs84()))
-            )
+            )*/
         )
         routeParameters.isReturnDirections = true
         routeParameters.isReturnStops = true
@@ -203,7 +230,9 @@ class MapActivity : AppCompatActivity() {
         val requestCode = 2
         val reqPermissions = arrayOf(
             Manifest.permission.ACCESS_FINE_LOCATION,
-            Manifest.permission.ACCESS_COARSE_LOCATION
+            Manifest.permission.ACCESS_COARSE_LOCATION,
+            Manifest.permission.READ_EXTERNAL_STORAGE,
+            Manifest.permission.WRITE_EXTERNAL_STORAGE,
         )
 
         val permissionCheckFineLocation = ContextCompat.checkSelfPermission(
@@ -216,7 +245,18 @@ class MapActivity : AppCompatActivity() {
             reqPermissions[1]
         ) == PackageManager.PERMISSION_GRANTED
 
-        if ((permissionCheckFineLocation && permissionCheckCoarseLocation).not()) {
+        val permissionCheckReadStorage = ContextCompat.checkSelfPermission(
+            this,
+            reqPermissions[2]
+        ) == PackageManager.PERMISSION_GRANTED
+
+        val permissionCheckWriteStorage = ContextCompat.checkSelfPermission(
+            this,
+            reqPermissions[3]
+        ) == PackageManager.PERMISSION_GRANTED
+
+        if ((permissionCheckFineLocation && permissionCheckCoarseLocation
+                    && permissionCheckReadStorage && permissionCheckWriteStorage).not()) {
             ActivityCompat.requestPermissions(this, reqPermissions, requestCode)
         } else {
             Toast.makeText(this, "Error getting location", Toast.LENGTH_LONG).show()
@@ -227,7 +267,7 @@ class MapActivity : AppCompatActivity() {
         requestCode: Int, permissions: Array<String>, grantResults: IntArray
     ) {
         if (grantResults.isNotEmpty() && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
-            initLocation()
+            permissionsDone()
         } else {
             Toast.makeText(
                 this@MapActivity, "Permission denied", Toast.LENGTH_SHORT
@@ -235,11 +275,48 @@ class MapActivity : AppCompatActivity() {
         }
     }
 
+    private fun permissionsDone() {
+        map()
+        setupMap()
+
+        setupTextToSpeech()
+    }
+
+    private fun map() {
+        val mapPath = getMapPath()
+        if (mapPath == null) {
+            Toast.makeText(this, "Can't find the map", Toast.LENGTH_SHORT).show()
+            return
+        }
+
+        loadMap(getMapPath()!!)
+    }
+
     private fun initLocation() {
         locationDisplay = mapView.locationDisplay
         if (locationDisplay.isStarted.not()) {
             locationDisplay.startAsync()
         }
+    }
+
+    private fun loadMap(mapPath: String) {
+        val mapPackageFile = File(mapPath)
+        if (mapPackageFile.exists().not()) {
+            Toast.makeText(this, "Local Map not found", Toast.LENGTH_SHORT).show()
+            return
+        }
+
+        val mobileMapPackage = MobileMapPackage(mapPackageFile.path)
+        mobileMapPackage.addDoneLoadingListener {
+            with(mobileMapPackage) {
+                if (loadStatus == LoadStatus.LOADED && maps.size > 0) {
+                    transportationNetworkDataset = maps[0].transportationNetworks[0]
+                    setupRoute()
+                    initLocation()
+                }
+            }
+        }
+        mobileMapPackage.loadAsync()
     }
 
     override fun onPause() {

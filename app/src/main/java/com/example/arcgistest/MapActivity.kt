@@ -12,14 +12,11 @@ import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
-import com.esri.arcgisruntime.ArcGISRuntimeEnvironment
 import com.esri.arcgisruntime.data.TransportationNetworkDataset
 import com.esri.arcgisruntime.geometry.Point
 import com.esri.arcgisruntime.geometry.SpatialReferences
 import com.esri.arcgisruntime.loadable.LoadStatus
 import com.esri.arcgisruntime.location.LocationDataSource
-import com.esri.arcgisruntime.mapping.ArcGISMap
-import com.esri.arcgisruntime.mapping.BasemapStyle
 import com.esri.arcgisruntime.mapping.MobileMapPackage
 import com.esri.arcgisruntime.mapping.Viewpoint
 import com.esri.arcgisruntime.mapping.view.Graphic
@@ -28,6 +25,8 @@ import com.esri.arcgisruntime.mapping.view.LocationDisplay
 import com.esri.arcgisruntime.navigation.DestinationStatus
 import com.esri.arcgisruntime.navigation.RouteTracker
 import com.esri.arcgisruntime.symbology.SimpleLineSymbol
+import com.esri.arcgisruntime.tasks.geocode.LocatorTask
+import com.esri.arcgisruntime.tasks.geocode.SuggestParameters
 import com.esri.arcgisruntime.tasks.networkanalysis.RouteParameters
 import com.esri.arcgisruntime.tasks.networkanalysis.RouteResult
 import com.esri.arcgisruntime.tasks.networkanalysis.RouteTask
@@ -40,6 +39,7 @@ import java.util.concurrent.ExecutionException
 class MapActivity : AppCompatActivity() {
 
     private lateinit var locationDisplay: LocationDisplay
+    private lateinit var offlineLocatorTask: LocatorTask
 
     // Voice instructions
     private var textToSpeech: TextToSpeech? = null
@@ -54,6 +54,8 @@ class MapActivity : AppCompatActivity() {
 
         requestPermissions()
         initLocation()
+
+        btnSearch.setOnClickListener { getSuggestResultsLocation() }
     }
 
     private fun getMapPath(): String? {
@@ -82,8 +84,8 @@ class MapActivity : AppCompatActivity() {
     }
 
     private fun setupMap() {
-        ArcGISRuntimeEnvironment.setApiKey(BuildConfig.API_KEY)
-        mapView.map = ArcGISMap(BasemapStyle.ARCGIS_STREETS)
+        /*ArcGISRuntimeEnvironment.setApiKey(BuildConfig.API_KEY)
+        mapView.map = ArcGISMap(BasemapStyle.ARCGIS_STREETS)*/
         mapView.graphicsOverlays.add(GraphicsOverlay())
     }
 
@@ -111,16 +113,16 @@ class MapActivity : AppCompatActivity() {
 
     private fun setupStops(routeParameters: RouteParameters) {
         routeParameters.setStops(
-            listOf(
+            /*listOf(
                 Stop(Point(-81.257815, 33.979253, SpatialReferences.getWgs84())),
                 Stop(Point(-81.252928, 33.978554, SpatialReferences.getWgs84())),
                 Stop(Point(-81.244195, 33.978477, SpatialReferences.getWgs84()))
-            )
-            /*listOf(
+            )*/
+            listOf(
                 Stop(Point(-117.160386, 32.706608, SpatialReferences.getWgs84())),
                 Stop(Point(-117.173034, 32.712327, SpatialReferences.getWgs84())),
                 Stop(Point(-117.147230, 32.730467, SpatialReferences.getWgs84()))
-            )*/
+            )
         )
         routeParameters.isReturnDirections = true
         routeParameters.isReturnStops = true
@@ -172,7 +174,7 @@ class MapActivity : AppCompatActivity() {
             listOf(routeAheadGraphic, routeTraveledGraphic)
         )
 
-        val routeTracker = RouteTracker(applicationContext, routeResult, 0, true)
+        val routeTracker = RouteTracker(applicationContext, routeResult, 0)
         val reRoutingFuture = routeTracker.enableReroutingAsync(
             routeTask, routeParameters, RouteTracker.ReroutingStrategy.TO_NEXT_STOP, true
         )
@@ -310,13 +312,44 @@ class MapActivity : AppCompatActivity() {
         mobileMapPackage.addDoneLoadingListener {
             with(mobileMapPackage) {
                 if (loadStatus == LoadStatus.LOADED && maps.size > 0) {
+                    mapView.map = maps[0]
                     transportationNetworkDataset = maps[0].transportationNetworks[0]
+                    offlineLocatorTask = locatorTask
                     setupRoute()
                     initLocation()
                 }
             }
         }
         mobileMapPackage.loadAsync()
+    }
+
+    private fun getSuggestResultsLocation() {
+        try {
+            val address = "Viano Wy"
+            val suggestionsFutures = offlineLocatorTask.suggestAsync(address, getSuggestParameters())
+            suggestionsFutures.addDoneListener {
+                try {
+                    val suggestResults = suggestionsFutures.get().map { it.label.toString() }
+                    Log.d("SERGIO", "Suggestions $suggestResults")
+                } catch (e: Exception) {
+                    Log.d("SERGIO", "Error 1")
+                }
+            }
+        } catch (e: Exception) {
+            Log.d("SERGIO", "Error 2")
+        }
+    }
+
+    private fun getSuggestParameters(): SuggestParameters {
+        return SuggestParameters().apply {
+            location?.position?.let {
+                val point = Point(it.x, it.y, SpatialReferences.getWgs84())
+                val stop = Stop(point)
+                preferredSearchLocation = Point(it.x, it.y)
+                searchArea = stop.geometry
+                maxResults = 3
+            }
+        }
     }
 
     override fun onPause() {
